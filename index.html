@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<!--
+=====================================================================
+STARCHAT - ONE FILE. Everything you need is in this file.
+=====================================================================
+
+A) FIREBASE SECURITY RULES - copy the text between the lines below and
+   paste it into Firebase > Firestore Database > Rules, then click Publish.
+
+----- COPY FROM HERE -----
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Account directory: anyone can see usernames (needed for the sign-in list
+    // and for finding people to chat with). Only the owner can remove their entry.
+    match /users/{username} {
+      allow read: if true;
+      allow create: if request.auth != null
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.username is string
+                    && request.resource.data.username.size() >= 2
+                    && request.resource.data.username.size() <= 20;
+      allow update: if false;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // Chats: only the two members can read or change them.
+    match /chats/{chatId} {
+      allow read: if request.auth != null
+                  && request.auth.uid in resource.data.members;
+      allow create: if request.auth != null
+                    && request.auth.uid in request.resource.data.members
+                    && request.resource.data.members.size() == 2;
+      allow update: if request.auth != null
+                    && request.auth.uid in resource.data.members
+                    && request.resource.data.members == resource.data.members;
+      allow delete: if false;
+
+      // Messages: only chat members can read; you can only send as yourself.
+      match /messages/{msgId} {
+        allow read: if request.auth != null
+                    && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.members;
+        allow create: if request.auth != null
+                      && request.resource.data.from == request.auth.uid
+                      && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.members
+                      && request.resource.data.text is string
+                      && request.resource.data.text.size() > 0
+                      && request.resource.data.text.size() <= 2000;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
+
+----- COPY TO HERE -----
+
+B) SETUP STEPS (also: paste your firebaseConfig into the script near the top
+   of this file, replacing the PASTE_YOUR_ values)
+
+# StarChat setup (Firebase + GitHub Pages)
+
+You need a free Google account. This takes about 10 minutes.
+
+## 1. Create a Firebase project
+1. Go to https://console.firebase.google.com and click **Add project**.
+2. Name it (e.g. `starchat`). You can turn off Google Analytics. Click **Create**.
+
+## 2. Turn on sign-in
+1. In the left menu: **Build → Authentication → Get started**.
+2. Under **Sign-in method**, click **Email/Password**, switch **Enable** on, and save.
+
+## 3. Create the database
+1. **Build → Firestore Database → Create database**.
+2. Pick a location near you and choose **Start in production mode**. Click **Create**.
+3. Open the **Rules** tab, delete what's there, paste the whole contents of `firestore.rules`, and click **Publish**.
+
+## 4. Get your config
+1. Click the **gear icon → Project settings → General**.
+2. Scroll to **Your apps** and click the **</>** (Web) icon. Give it a nickname and register it (no hosting needed).
+3. Copy the `firebaseConfig` object it shows.
+4. Open `index.html`, find `const firebaseConfig = {...}` near the top, and replace the `PASTE_YOUR_...` values with yours.
+
+## 5. Put it on GitHub Pages
+1. Create a new repository on https://github.com (e.g. `starchat`). Make it **Public**.
+2. Upload `index.html` (and `firestore.rules` and this file, if you like). Commit.
+3. Go to **Settings → Pages**. Under **Build and deployment**, choose **Deploy from a branch**, pick `main` and `/ (root)`, and save.
+4. After a minute your site is at `https://YOUR-USERNAME.github.io/starchat/`.
+
+## 6. Authorize your GitHub Pages domain
+1. In Firebase: **Authentication → Settings → Authorized domains → Add domain**.
+2. Add `YOUR-USERNAME.github.io`. Without this, sign-in will be blocked.
+
+## 7. Test it
+Open the site on two devices, create an account on each, then tap **+** and message each other.
+
+## Notes
+- Accounts are Firebase email/password logins using `username@starchat.app` behind the scenes. Users never see this.
+- Usernames are visible to everyone. Chats and messages are visible only to the two people in them.
+- This is not end-to-end encrypted like WhatsApp. Firebase can read the data on its servers. Don't use it for sensitive information.
+
+=====================================================================
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>StarChat</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⭐</text></svg>">
+<style>
+  :root{
+    --deep:#1c3f66; --blue1:#2f6fb0; --blue2:#4f95d6;
+    --gold1:#ffcf6b; --gold2:#ff9f43;
+    --bg:#eef4fb; --card:#ffffff; --ink:#152743; --muted:#6b7d95; --danger:#d1495b;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--ink); display:flex; align-items:center; justify-content:center;
+  }
+  #app{
+    width:100%; max-width:430px; height:100vh; max-height:900px; background:var(--card);
+    position:relative; overflow:hidden; box-shadow:0 20px 60px rgba(28,63,102,.18);
+    display:flex; flex-direction:column;
+  }
+  @media (min-width:480px){ #app{ border-radius:28px; height:850px; margin:20px; } }
+
+  .logo{ display:block; }
+  .brandmark{ display:flex; align-items:center; gap:10px; }
+  .brandmark .logo{ width:34px; height:34px; }
+  .brand-name{ font-size:19px; font-weight:700; }
+
+  .screen{ position:absolute; inset:0; display:flex; flex-direction:column; background:var(--card); animation:fade .25s ease; }
+  @keyframes fade{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;} }
+
+  .auth-screen{ justify-content:flex-start; padding:48px 28px 28px; background:linear-gradient(180deg,#f3f8fd 0%,#fff 55%); overflow-y:auto; }
+  .auth-hero{ text-align:center; margin-bottom:30px; }
+  .auth-hero .logo{ width:88px; height:88px; margin:0 auto 14px; }
+  .auth-hero h1{ margin:0; font-size:26px; font-weight:800; color:var(--deep); }
+  .auth-hero p{ margin:6px 0 0; color:var(--muted); font-size:14.5px; }
+
+  .field{ margin-bottom:14px; }
+  .field label{ display:block; font-size:12.5px; color:var(--muted); margin-bottom:6px; font-weight:600; }
+  .field input{
+    width:100%; padding:13px 14px; border-radius:12px; border:1.5px solid #dfe8f2;
+    font-size:15px; background:#fbfdff; outline:none; transition:border-color .15s;
+  }
+  .field input:focus{ border-color:var(--blue2); }
+  .field-error{ color:var(--danger); font-size:12.5px; margin-top:6px; min-height:16px; }
+
+  .btn{ width:100%; padding:14px; border:none; border-radius:12px; font-size:15.5px; font-weight:700; cursor:pointer; transition:transform .08s ease; }
+  .btn:active{ transform:scale(0.98); }
+  .btn:disabled{ opacity:.6; cursor:default; }
+  .btn-primary{ background:linear-gradient(135deg,var(--blue2),var(--deep)); color:#fff; }
+  .btn-danger{ background:var(--danger); color:#fff; }
+  .btn-secondary{ background:#eef3fa; color:var(--deep); }
+
+  .account-row{
+    display:flex; align-items:center; gap:12px; padding:13px 12px; border-radius:14px; cursor:pointer;
+    border:1.5px solid #eef2f8; margin-bottom:10px; transition:border-color .15s, background .15s;
+  }
+  .account-row:hover{ border-color:var(--blue2); background:#f6faff; }
+  .avatar{
+    width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-weight:700; color:#fff; font-size:16px; flex:none; background:linear-gradient(135deg,var(--gold1),var(--gold2));
+  }
+  .account-row .name{ font-weight:600; font-size:15px; }
+  .account-row .sub{ font-size:12px; color:var(--muted); }
+  .empty-note{ text-align:center; color:var(--muted); font-size:13.5px; margin:14px 0 20px; }
+  .back-row{ display:flex; align-items:center; gap:8px; margin-bottom:20px; cursor:pointer; color:var(--blue1); font-weight:600; font-size:14px; }
+
+  .topbar{
+    background:linear-gradient(135deg,var(--blue1),var(--deep)); color:#fff; padding:16px 18px;
+    display:flex; align-items:center; justify-content:space-between; flex:none;
+  }
+  .icon-btn{
+    width:36px; height:36px; border-radius:50%; border:none; background:rgba(255,255,255,.15);
+    color:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:16px;
+  }
+  .chat-list{ flex:1; overflow-y:auto; padding:8px 0; }
+  .chat-row{ display:flex; align-items:center; gap:14px; padding:12px 18px; cursor:pointer; border-bottom:1px solid #f2f5f9; }
+  .chat-row:hover{ background:#f8fbfe; }
+  .chat-meta{ flex:1; min-width:0; }
+  .chat-meta .top{ display:flex; justify-content:space-between; }
+  .chat-meta .cname{ font-weight:700; font-size:15px; }
+  .chat-meta .time{ font-size:11.5px; color:var(--muted); }
+  .chat-meta .preview{ font-size:13px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px; }
+
+  .convo-topbar{
+    background:linear-gradient(135deg,var(--blue1),var(--deep)); color:#fff; padding:14px;
+    display:flex; align-items:center; gap:12px; flex:none;
+  }
+  .convo-topbar .cname{ font-weight:700; font-size:15.5px; }
+  .convo-topbar .status{ font-size:11.5px; opacity:.85; }
+  .messages{ flex:1; overflow-y:auto; padding:16px; background:#eaf1fa; display:flex; flex-direction:column; gap:8px; }
+  .bubble{ max-width:75%; padding:10px 13px; border-radius:16px; font-size:14.5px; line-height:1.35; box-shadow:0 1px 1px rgba(0,0,0,.04); word-wrap:break-word; }
+  .bubble.mine{ align-self:flex-end; background:linear-gradient(135deg,var(--gold1),var(--gold2)); color:#3a2400; border-bottom-right-radius:4px; }
+  .bubble.theirs{ align-self:flex-start; background:#fff; color:var(--ink); border-bottom-left-radius:4px; }
+  .msg-time{ font-size:10px; opacity:.6; margin-top:3px; text-align:right; }
+  .composer{ display:flex; gap:10px; padding:12px; background:#fff; border-top:1px solid #eef2f8; flex:none; }
+  .composer input{ flex:1; padding:12px 14px; border-radius:22px; border:1.5px solid #e2e9f2; font-size:14.5px; outline:none; }
+  .composer input:focus{ border-color:var(--blue2); }
+  .send-btn{
+    width:44px; height:44px; border-radius:50%; border:none; cursor:pointer;
+    background:linear-gradient(135deg,var(--blue2),var(--deep)); color:#fff; flex:none;
+  }
+
+  .settings-body{ flex:1; overflow-y:auto; padding:22px 20px; }
+  .profile-card{ display:flex; align-items:center; gap:14px; padding:16px; background:#f6faff; border-radius:16px; margin-bottom:26px; }
+  .profile-card .avatar{ width:54px; height:54px; font-size:20px; }
+  .profile-card .name{ font-weight:700; font-size:16.5px; }
+  .profile-card .sub{ font-size:12.5px; color:var(--muted); }
+  .settings-group{ margin-bottom:26px; }
+  .settings-group h3{ font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:0 0 10px; }
+  .settings-item{ padding:14px 4px; border-bottom:1px solid #f2f5f9; font-size:14.5px; cursor:pointer; }
+  .settings-item.danger{ color:var(--danger); font-weight:700; }
+
+  .modal-overlay{
+    position:absolute; inset:0; background:rgba(15,25,45,.45);
+    display:flex; align-items:center; justify-content:center; z-index:50; padding:24px;
+  }
+  .modal{ background:#fff; border-radius:18px; padding:24px; width:100%; max-width:340px; }
+  .modal h3{ margin:0 0 6px; font-size:17px; color:var(--deep); }
+  .modal p{ margin:0 0 16px; font-size:13.5px; color:var(--muted); line-height:1.4; }
+  .modal-actions{ display:flex; gap:10px; margin-top:16px; }
+  .modal-actions .btn{ flex:1; padding:12px; font-size:14px; }
+
+  .toast{
+    position:absolute; bottom:20px; left:50%; transform:translateX(-50%);
+    background:var(--deep); color:#fff; padding:10px 18px; border-radius:20px;
+    font-size:13px; z-index:60; opacity:0; pointer-events:none; transition:opacity .25s; white-space:nowrap; max-width:90%; overflow:hidden; text-overflow:ellipsis;
+  }
+  .toast.show{ opacity:1; }
+  .setup-box{ background:#fff7e6; border:1px solid #ffd27a; border-radius:14px; padding:14px; font-size:13px; line-height:1.5; color:#5a4100; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<template id="tpl-logo">
+  <svg viewBox="0 0 100 100" class="logo" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#5aa7e0"/><stop offset="100%" stop-color="#1c3f66"/>
+      </linearGradient>
+      <radialGradient id="starGrad" cx="35%" cy="30%" r="75%">
+        <stop offset="0%" stop-color="#fff1c2"/><stop offset="45%" stop-color="#ffcf6b"/><stop offset="100%" stop-color="#ff9f43"/>
+      </radialGradient>
+    </defs>
+    <path d="M50 8 A42 42 0 1 1 15 78 L8 92 L24 84 A42 42 0 0 1 50 8 Z" fill="none" stroke="url(#ringGrad)" stroke-width="7" stroke-linecap="round"/>
+    <path d="M50 20 L58.5 41 L81 43 L64 58 L69 80 L50 68 L31 80 L36 58 L19 43 L41.5 41 Z" fill="url(#starGrad)"/>
+    <path d="M80 14 L83 21 L90 24 L83 27 L80 34 L77 27 L70 24 L77 21 Z" fill="#ffe08a"/>
+  </svg>
+</template>
+
+<script type="module">
+// ============================================================
+// STEP 1: Paste your Firebase config here (see SETUP.md)
+// ============================================================
+const firebaseConfig = {
+  apiKey: "PASTE_YOUR_API_KEY",
+  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
+  projectId: "PASTE_YOUR_PROJECT_ID",
+  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "PASTE_YOUR_SENDER_ID",
+  appId: "PASTE_YOUR_APP_ID"
+};
+// ============================================================
+
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  signOut, onAuthStateChanged, deleteUser
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, deleteDoc,
+  query, where, orderBy, onSnapshot
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const app = document.getElementById('app');
+const logoTpl = document.getElementById('tpl-logo').innerHTML;
+
+const configured = !Object.values(firebaseConfig).some(v => String(v).startsWith('PASTE_'));
+let auth = null, db = null;
+if (configured) {
+  const fb = initializeApp(firebaseConfig);
+  auth = getAuth(fb);
+  db = getFirestore(fb);
+}
+
+const TEAM = { id:'starchat', name:'StarChat', initial:'S',
+  greeting:"Welcome to StarChat! Tap + on the chat list to message another StarChat account." };
+const REPLIES = ["Got it 👍","Haha true","Sounds good, talk soon.","Okay, noted!","Nice, thanks for the update.","Let's catch up later.","👍👍"];
+const USERNAME_RE = /^[A-Za-z0-9_.-]{2,20}$/;
+
+const state = {
+  accounts: [],             // [{ key, name, uid }] everyone with an account
+  chats: [],                // [{ id, other, otherName, last }]
+  session: null,            // { uid, key, name }
+  pendingAccount: null,
+  view: 'loading',
+  activeContact: null,      // 'starchat' or other user's uid
+  activeName: '',
+  team: [{ from:'them', text:TEAM.greeting, time:nowStr() }],
+  chatsUnsub: null,
+  convoUnsub: null,
+  toastTimer: null,
+  authChecked: false
+};
+
+// ---------- helpers ----------
+function nowStr(){ return new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
+function initials(name){ return (name||'?').trim().charAt(0).toUpperCase(); }
+function escapeHtml(str){ const d=document.createElement('div'); d.textContent = str==null ? '' : String(str); return d.innerHTML; }
+function emailFor(key){ return key + '@starchat.app'; }
+function chatIdFor(a,b){ return [a,b].sort().join('_'); }
+function nameOfUid(uid){ const a = state.accounts.find(x=>x.uid===uid); return a ? a.name : 'Unknown'; }
+function showToast(msg){
+  let t = app.querySelector('.toast');
+  if(!t){ t=document.createElement('div'); t.className='toast'; app.appendChild(t); }
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(state.toastTimer);
+  state.toastTimer = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+function screenEl(cls){
+  const d=document.createElement('div');
+  d.className='screen '+(cls||'');
+  d.style.display='flex';
+  app.appendChild(d);
+  return d;
+}
+function friendlyAuthError(e){
+  const c = e && e.code || '';
+  if(c==='auth/invalid-credential' || c==='auth/wrong-password' || c==='auth/invalid-login-credentials') return 'Incorrect password. Try again.';
+  if(c==='auth/too-many-requests') return 'Too many attempts. Wait a minute and try again.';
+  if(c==='auth/network-request-failed') return 'No connection. Check your internet and try again.';
+  if(c==='auth/weak-password') return 'Password must be at least 6 characters.';
+  return 'Something went wrong. Try again.';
+}
+
+// ---------- realtime data ----------
+function subscribeAccounts(){
+  onSnapshot(collection(db,'users'), snap=>{
+    state.accounts = snap.docs.map(d=>({ key:d.id, name:d.data().username, uid:d.data().uid }));
+    if(state.view==='select' || state.view==='newchat') render();
+  }, ()=>{ showToast('Cannot load accounts. Check Firestore rules.'); });
+}
+function subscribeChats(uid){
+  if(state.chatsUnsub) state.chatsUnsub();
+  const q = query(collection(db,'chats'), where('members','array-contains', uid));
+  state.chatsUnsub = onSnapshot(q, snap=>{
+    state.chats = snap.docs.map(d=>{
+      const v = d.data();
+      const other = (v.members||[]).find(m=>m!==uid);
+      return { id:d.id, other, otherName: (v.names && v.names[other]) || nameOfUid(other), last: v.last || null };
+    }).filter(c=>c.other)
+      .sort((a,b)=>((b.last&&b.last.ts)||0)-((a.last&&a.last.ts)||0));
+    if(state.view==='chatlist') render();
+  }, ()=>{ showToast('Cannot load chats. Check Firestore rules.'); });
+}
+function unsubscribeChats(){
+  if(state.chatsUnsub){ state.chatsUnsub(); state.chatsUnsub=null; }
+  state.chats = [];
+}
+
+// ---------- render router ----------
+async function render(){
+  if(state.convoUnsub){ state.convoUnsub(); state.convoUnsub=null; }
+  app.querySelectorAll('.screen').forEach(el=>el.remove());
+  if(!configured){ renderSetup(); return; }
+  if(!state.authChecked){ renderLoading(); return; }
+  switch(state.view){
+    case 'select':   renderSelect(); break;
+    case 'login':    renderLogin(); break;
+    case 'create':   renderCreate(); break;
+    case 'chatlist': renderChatList(); break;
+    case 'newchat':  renderNewChat(); break;
+    case 'convo':    renderConvo(); break;
+    case 'settings': renderSettings(); break;
+  }
+}
+
+function renderSetup(){
+  const s = screenEl('auth-screen');
+  s.innerHTML = `
+    <div class="auth-hero">${logoTpl}<h1>StarChat</h1><p>Setup needed</p></div>
+    <div class="setup-box">
+      Open <b>index.html</b> and replace the <b>PASTE_YOUR_…</b> values in <b>firebaseConfig</b> with your Firebase project settings. See <b>SETUP.md</b> for the steps.
+    </div>`;
+}
+function renderLoading(){
+  const s = screenEl('auth-screen');
+  s.innerHTML = `<div class="auth-hero">${logoTpl}<h1>StarChat</h1><p>Loading…</p></div>`;
+}
+
+// ---------- SELECT ACCOUNT ----------
+function renderSelect(){
+  const s = screenEl('auth-screen');
+  s.innerHTML = `
+    <div class="auth-hero">${logoTpl}<h1>StarChat</h1><p>Secure, simple messaging.</p></div>
+    <div id="acct-list"></div>
+    <button class="btn btn-primary" id="new-acct-btn">+ Create new account</button>`;
+  const list = s.querySelector('#acct-list');
+  if(state.accounts.length===0){
+    list.innerHTML = `<div class="empty-note">No accounts yet. Create one to get started.</div>`;
+  } else {
+    list.innerHTML = `<div class="field"><label>Choose your account</label></div>`;
+    state.accounts.forEach(a=>{
+      const row = document.createElement('div');
+      row.className='account-row';
+      row.innerHTML = `<div class="avatar">${escapeHtml(initials(a.name))}</div>
+        <div><div class="name">${escapeHtml(a.name)}</div><div class="sub">Tap to sign in</div></div>`;
+      row.onclick = ()=>{ state.pendingAccount=a; state.view='login'; render(); };
+      list.appendChild(row);
+    });
+  }
+  s.querySelector('#new-acct-btn').onclick = ()=>{ state.view='create'; render(); };
+}
+
+// ---------- LOGIN ----------
+function renderLogin(){
+  const acct = state.pendingAccount;
+  const s = screenEl('auth-screen');
+  s.innerHTML = `
+    <div class="back-row" id="back-btn">‹ Back</div>
+    <div class="auth-hero">
+      <div class="avatar" style="width:72px;height:72px;font-size:26px;margin:0 auto 12px;">${escapeHtml(initials(acct.name))}</div>
+      <h1 style="font-size:21px;">${escapeHtml(acct.name)}</h1>
+      <p>Enter your password to continue</p>
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="pw-input" placeholder="Enter password">
+      <div class="field-error" id="pw-err"></div>
+    </div>
+    <button class="btn btn-primary" id="login-btn">Log in</button>`;
+  s.querySelector('#back-btn').onclick = ()=>{ state.view='select'; render(); };
+  const pw = s.querySelector('#pw-input');
+  const err = s.querySelector('#pw-err');
+  const btn = s.querySelector('#login-btn');
+  const doLogin = async ()=>{
+    if(!pw.value){ err.textContent='Enter your password.'; return; }
+    btn.disabled = true; err.textContent='';
+    try{
+      const cred = await signInWithEmailAndPassword(auth, emailFor(acct.key), pw.value);
+      await enterApp({ uid:cred.user.uid, key:acct.key, name:acct.name });
+    }catch(e){
+      err.textContent = friendlyAuthError(e);
+      pw.value=''; btn.disabled=false;
+    }
+  };
+  btn.onclick = doLogin;
+  pw.addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+}
+
+// ---------- CREATE ACCOUNT ----------
+function renderCreate(){
+  const s = screenEl('auth-screen');
+  s.innerHTML = `
+    <div class="back-row" id="back-btn">‹ Back</div>
+    <div class="auth-hero">${logoTpl}<h1 style="font-size:22px;">Create your account</h1>
+      <p>Pick a username and a password.</p></div>
+    <div class="field"><label>Username (letters, numbers, _ . -)</label><input type="text" id="name-input" placeholder="e.g. jordan"></div>
+    <div class="field"><label>Password</label><input type="password" id="pw1-input" placeholder="At least 6 characters"></div>
+    <div class="field"><label>Confirm password</label><input type="password" id="pw2-input" placeholder="Re-enter password">
+      <div class="field-error" id="create-err"></div></div>
+    <button class="btn btn-primary" id="create-btn">Create account</button>`;
+  s.querySelector('#back-btn').onclick = ()=>{ state.view='select'; render(); };
+  const btn = s.querySelector('#create-btn');
+  btn.onclick = async ()=>{
+    const name = s.querySelector('#name-input').value.trim();
+    const pw1 = s.querySelector('#pw1-input').value;
+    const pw2 = s.querySelector('#pw2-input').value;
+    const err = s.querySelector('#create-err');
+    if(!USERNAME_RE.test(name)){ err.textContent='Use 2–20 letters, numbers, _ . or -.'; return; }
+    if(pw1.length < 6){ err.textContent='Password must be at least 6 characters.'; return; }
+    if(pw1 !== pw2){ err.textContent='Passwords do not match.'; return; }
+    const key = name.toLowerCase();
+    btn.disabled = true; err.textContent='';
+    try{
+      const taken = await getDoc(doc(db,'users',key));
+      if(taken.exists()){ err.textContent='That username is already taken.'; btn.disabled=false; return; }
+      const cred = await createUserWithEmailAndPassword(auth, emailFor(key), pw1);
+      await setDoc(doc(db,'users',key), { username:name, uid:cred.user.uid, createdAt:Date.now() });
+      await enterApp({ uid:cred.user.uid, key, name });
+    }catch(e){
+      err.textContent = (e && e.code==='auth/email-already-in-use') ? 'That username is already taken.' : friendlyAuthError(e);
+      btn.disabled=false;
+    }
+  };
+}
+
+async function enterApp(session){
+  state.session = session;
+  state.view = 'chatlist';
+  subscribeChats(session.uid);
+  render();
+}
+
+// ---------- CHAT LIST ----------
+function renderChatList(){
+  const s = screenEl('');
+  const top = document.createElement('div');
+  top.className='topbar';
+  top.innerHTML = `
+    <div class="brandmark">${logoTpl}<span class="brand-name">StarChat</span></div>
+    <div style="display:flex;gap:8px;">
+      <button class="icon-btn" id="newchat-btn">＋</button>
+      <button class="icon-btn" id="settings-btn">⚙︎</button>
+    </div>`;
+  s.appendChild(top);
+  const list = document.createElement('div');
+  list.className='chat-list';
+  s.appendChild(list);
+
+  const team = state.team[state.team.length-1];
+  const teamRow = document.createElement('div');
+  teamRow.className='chat-row';
+  teamRow.innerHTML = `
+    <div class="avatar">${TEAM.initial}</div>
+    <div class="chat-meta">
+      <div class="top"><span class="cname">${TEAM.name}</span><span class="time">${escapeHtml(team.time)}</span></div>
+      <div class="preview">${escapeHtml(team.text)}</div>
+    </div>`;
+  teamRow.onclick = ()=>{ state.activeContact='starchat'; state.activeName=TEAM.name; state.view='convo'; render(); };
+  list.appendChild(teamRow);
+
+  if(state.chats.length===0){
+    const note = document.createElement('div');
+    note.className='empty-note';
+    note.textContent = 'No chats yet. Tap + to message another StarChat account.';
+    list.appendChild(note);
+  }
+  state.chats.forEach(c=>{
+    const mine = c.last && c.last.from===state.session.uid;
+    const row = document.createElement('div');
+    row.className='chat-row';
+    row.innerHTML = `
+      <div class="avatar">${escapeHtml(initials(c.otherName))}</div>
+      <div class="chat-meta">
+        <div class="top"><span class="cname">${escapeHtml(c.otherName)}</span><span class="time">${c.last?escapeHtml(c.last.time):''}</span></div>
+        <div class="preview">${c.last?escapeHtml((mine?'You: ':'')+c.last.text):''}</div>
+      </div>`;
+    row.onclick = ()=>{ state.activeContact=c.other; state.activeName=c.otherName; state.view='convo'; render(); };
+    list.appendChild(row);
+  });
+
+  top.querySelector('#newchat-btn').onclick = ()=>{ state.view='newchat'; render(); };
+  top.querySelector('#settings-btn').onclick = ()=>{ state.view='settings'; render(); };
+}
+
+// ---------- NEW CHAT ----------
+function renderNewChat(){
+  const s = screenEl('');
+  const top = document.createElement('div');
+  top.className='convo-topbar';
+  top.innerHTML = `<button class="icon-btn" id="back-btn" style="background:transparent;">‹</button><div class="cname">New chat</div>`;
+  s.appendChild(top);
+  const body = document.createElement('div');
+  body.className='settings-body';
+  body.innerHTML = `
+    <div class="field"><input type="text" id="search-input" placeholder="Search StarChat accounts"></div>
+    <div id="dir-list"></div>`;
+  s.appendChild(body);
+  top.querySelector('#back-btn').onclick = ()=>{ state.view='chatlist'; render(); };
+
+  const dirList = body.querySelector('#dir-list');
+  function paint(filter){
+    dirList.innerHTML='';
+    const names = state.accounts
+      .filter(a=>a.uid!==state.session.uid)
+      .filter(a=>a.name.toLowerCase().includes(filter.toLowerCase()));
+    if(names.length===0){
+      dirList.innerHTML = `<div class="empty-note">No matching accounts. Ask your friend to create a StarChat account first.</div>`;
+      return;
+    }
+    names.forEach(a=>{
+      const row = document.createElement('div');
+      row.className='account-row';
+      row.innerHTML = `<div class="avatar">${escapeHtml(initials(a.name))}</div><div><div class="name">${escapeHtml(a.name)}</div><div class="sub">Tap to start chatting</div></div>`;
+      row.onclick = ()=>{ state.activeContact=a.uid; state.activeName=a.name; state.view='convo'; render(); };
+      dirList.appendChild(row);
+    });
+  }
+  paint('');
+  body.querySelector('#search-input').addEventListener('input', e=>paint(e.target.value));
+}
+
+// ---------- CONVERSATION ----------
+function renderConvo(){
+  const isTeam = state.activeContact==='starchat';
+  const me = state.session.uid;
+  const other = state.activeContact;
+  const displayName = state.activeName || (isTeam ? TEAM.name : 'Chat');
+
+  const s = screenEl('');
+  const top = document.createElement('div');
+  top.className='convo-topbar';
+  top.innerHTML = `
+    <button class="icon-btn" id="back-btn" style="background:transparent;">‹</button>
+    <div class="avatar" style="width:38px;height:38px;font-size:14px;">${escapeHtml(initials(displayName))}</div>
+    <div><div class="cname">${escapeHtml(displayName)}</div><div class="status">${isTeam?'official':'StarChat account'}</div></div>`;
+  s.appendChild(top);
+
+  const wrap = document.createElement('div');
+  wrap.className='messages';
+  s.appendChild(wrap);
+
+  function paint(msgs){
+    wrap.innerHTML='';
+    msgs.forEach(m=>{
+      const b = document.createElement('div');
+      const mine = m.from===me;
+      b.className = 'bubble ' + (mine?'mine':'theirs');
+      b.innerHTML = `${escapeHtml(m.text)}<div class="msg-time">${escapeHtml(m.time)}</div>`;
+      wrap.appendChild(b);
+    });
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+
+  const composer = document.createElement('div');
+  composer.className='composer';
+  composer.innerHTML = `<input type="text" id="msg-input" placeholder="Message"><button class="send-btn" id="send-btn">➤</button>`;
+  s.appendChild(composer);
+  const input = composer.querySelector('#msg-input');
+
+  const chatId = isTeam ? null : chatIdFor(me, other);
+  if(isTeam){
+    paint(state.team);
+  } else {
+    const q = query(collection(db,'chats',chatId,'messages'), orderBy('ts','asc'));
+    state.convoUnsub = onSnapshot(q, snap=>{
+      if(state.view==='convo' && state.activeContact===other){
+        paint(snap.docs.map(d=>d.data()));
+      }
+    }, ()=>{
+      // A brand-new chat has no messages yet, which Firestore reports as a permission error; show it as empty.
+      if(state.view==='convo' && state.activeContact===other) paint([]);
+    });
+  }
+
+  async function send(){
+    const text = input.value.trim();
+    if(!text) return;
+    input.value='';
+    const now = Date.now(), time = nowStr();
+    if(isTeam){
+      state.team.push({ from:'me', text, time });
+      paint(state.team);
+      setTimeout(()=>{
+        state.team.push({ from:'them', text: REPLIES[Math.floor(Math.random()*REPLIES.length)], time: nowStr() });
+        if(state.view==='convo' && state.activeContact==='starchat') paint(state.team);
+      }, 900 + Math.random()*900);
+      return;
+    }
+    try{
+      // Make sure the chat exists first (the message rules check its members).
+      await setDoc(doc(db,'chats',chatId), {
+        members: [me, other].sort(),
+        names: { [me]: state.session.name, [other]: displayName },
+        last: { text, from:me, ts:now, time }
+      }, { merge:true });
+      await addDoc(collection(db,'chats',chatId,'messages'), { from:me, text, ts:now, time });
+    }catch(e){
+      showToast('Message not sent. Check your connection.');
+      input.value = text;
+    }
+  }
+  composer.querySelector('#send-btn').onclick = send;
+  input.addEventListener('keydown', e=>{ if(e.key==='Enter') send(); });
+  top.querySelector('#back-btn').onclick = ()=>{ state.view='chatlist'; render(); };
+}
+
+// ---------- SETTINGS ----------
+function renderSettings(){
+  const s = screenEl('');
+  const top = document.createElement('div');
+  top.className='convo-topbar';
+  top.innerHTML = `<button class="icon-btn" id="back-btn" style="background:transparent;">‹</button><div class="cname">Settings</div>`;
+  s.appendChild(top);
+  const body = document.createElement('div');
+  body.className='settings-body';
+  body.innerHTML = `
+    <div class="profile-card">
+      <div class="avatar">${escapeHtml(initials(state.session.name))}</div>
+      <div><div class="name">${escapeHtml(state.session.name)}</div><div class="sub">StarChat account</div></div>
+    </div>
+    <div class="settings-group">
+      <h3>Account</h3>
+      <div class="settings-item" id="logout-item">Log out</div>
+      <div class="settings-item danger" id="delete-item">Delete account</div>
+    </div>
+    <div class="settings-group">
+      <h3>About</h3>
+      <div class="settings-item" style="cursor:default;color:var(--muted);">Your account and chats are stored in StarChat's online database, so friends on other devices can find and message you.</div>
+    </div>`;
+  s.appendChild(body);
+  top.querySelector('#back-btn').onclick = ()=>{ state.view='chatlist'; render(); };
+  body.querySelector('#logout-item').onclick = async ()=>{
+    await signOut(auth);
+    unsubscribeChats();
+    state.session=null; state.pendingAccount=null; state.view='select';
+    render(); showToast('Logged out');
+  };
+  body.querySelector('#delete-item').onclick = openDeleteModal;
+}
+
+function openDeleteModal(){
+  const overlay = document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Delete account</h3>
+      <p>This permanently deletes "${escapeHtml(state.session.name)}" from StarChat. Enter your password to confirm.</p>
+      <div class="field">
+        <input type="password" id="del-pw" placeholder="Password">
+        <div class="field-error" id="del-err"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="del-cancel">Cancel</button>
+        <button class="btn btn-danger" id="del-confirm">Delete</button>
+      </div>
+    </div>`;
+  app.appendChild(overlay);
+  overlay.querySelector('#del-cancel').onclick = ()=>overlay.remove();
+  overlay.querySelector('#del-confirm').onclick = async ()=>{
+    const pw = overlay.querySelector('#del-pw').value;
+    const errEl = overlay.querySelector('#del-err');
+    const { key, name, uid } = state.session;
+    try{
+      // Re-check the password (this also gives a fresh login, which deletion requires).
+      const cred = await signInWithEmailAndPassword(auth, emailFor(key), pw);
+      if(cred.user.uid !== uid){ errEl.textContent='Incorrect password.'; return; }
+      const saved = await getDoc(doc(db,'users',key));
+      await deleteDoc(doc(db,'users',key));
+      try{
+        await deleteUser(cred.user);
+      }catch(err){
+        // Put the directory entry back if the login account could not be removed.
+        if(saved.exists()) await setDoc(doc(db,'users',key), saved.data());
+        errEl.textContent = 'Could not delete right now. Try again.';
+        return;
+      }
+      overlay.remove();
+      unsubscribeChats();
+      state.session=null; state.pendingAccount=null; state.view='select';
+      render(); showToast('Account deleted');
+    }catch(e){
+      errEl.textContent = friendlyAuthError(e);
+    }
+  };
+}
+
+// ---------- boot ----------
+if(configured){
+  subscribeAccounts();
+  let firstEvent = true;
+  onAuthStateChanged(auth, async user=>{
+    if(firstEvent){
+      firstEvent = false;
+      if(user && !state.session){
+        // Restore a signed-in session after reloading the page.
+        const snap = await getDocs(query(collection(db,'users'), where('uid','==',user.uid)));
+        if(!snap.empty){
+          const d = snap.docs[0];
+          state.session = { uid:user.uid, key:d.id, name:d.data().username };
+          state.view = 'chatlist';
+          subscribeChats(user.uid);
+        }
+      }
+      state.authChecked = true;
+      if(state.view==='loading') state.view='select';
+      render();
+    }
+  });
+} else {
+  state.authChecked = true;
+  render();
+}
+</script>
+</body>
+</html>
